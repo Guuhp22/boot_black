@@ -44,7 +44,7 @@ def salvar_json(caminho: Path, dados):
 def preco_mercado_livre(item_id: str):
     """Busca o preço de um anúncio via API pública do Mercado Livre."""
     url = f"https://api.mercadolibre.com/items/{item_id}"
-    resp = requests.get(url, timeout=15)
+    resp = requests.get(url, headers=HEADERS, timeout=15)
     resp.raise_for_status()
     dados = resp.json()
     return dados.get("price")
