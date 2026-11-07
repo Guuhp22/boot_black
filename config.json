@@ -1,0 +1,12 @@
+{
+  "items": [
+    {
+      "nome": "Exemplo Mercado Livre",
+      "mercado_livre_id": "MLB1234567890"
+    },
+    {
+      "nome": "Exemplo Amazon",
+      "amazon_url": "https://www.amazon.com.br/dp/XXXXXXXXXX"
+    }
+  ]
+}
