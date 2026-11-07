@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 import requests
-from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 
 CONFIG_FILE = Path("config.json")
 HISTORY_FILE = Path("price_history.json")
@@ -42,53 +42,78 @@ def salvar_json(caminho: Path, dados):
 
 
 def preco_mercado_livre(url: str):
-    """Faz scraping da página do produto no Mercado Livre para extrair o preço.
+    """Usa Playwright para acessar o Mercado Livre e extrair o preço.
 
-    A API oficial (api.mercadolibre.com/items/...) passou a exigir um
-    access token mesmo para itens públicos, então extraímos o preço
-    direto do HTML da página, igual é feito para a Amazon.
+    Requisições simples (requests) são identificadas como tráfego
+    suspeito e bloqueadas; um navegador headless tem mais chance de
+    passar pela verificação.
     """
-    resp = requests.get(url, headers=HEADERS, timeout=15)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "lxml")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            user_agent=HEADERS["User-Agent"],
+            locale="pt-BR",
+            viewport={"width": 1280, "height": 800},
+        )
+        page = context.new_page()
 
-    # Tenta primeiro via dado estruturado (JSON-LD), que é mais confiável
-    for script in soup.find_all("script", type="application/ld+json"):
+        preco = None
         try:
-            dados = json.loads(script.string)
-        except (TypeError, ValueError):
-            continue
-        candidatos = dados if isinstance(dados, list) else [dados]
-        for candidato in candidatos:
-            oferta = candidato.get("offers") if isinstance(candidato, dict) else None
-            if isinstance(oferta, dict) and oferta.get("price"):
+            page.goto(url, timeout=30000, wait_until="domcontentloaded")
+            page.wait_for_timeout(2000)
+
+            # Tenta primeiro via dado estruturado (JSON-LD), mais confiável
+            for script in page.query_selector_all('script[type="application/ld+json"]'):
                 try:
-                    return float(oferta["price"])
+                    dados = json.loads(script.inner_text())
                 except (TypeError, ValueError):
-                    pass
+                    continue
+                candidatos = dados if isinstance(dados, list) else [dados]
+                for candidato in candidatos:
+                    oferta = candidato.get("offers") if isinstance(candidato, dict) else None
+                    if isinstance(oferta, dict) and oferta.get("price"):
+                        try:
+                            preco = float(oferta["price"])
+                            break
+                        except (TypeError, ValueError):
+                            pass
+                if preco is not None:
+                    break
 
-    # Fallback: preço visível na página (parte inteira do valor)
-    fracao = soup.select_one(".andes-money-amount__fraction")
-    if fracao:
-        texto = fracao.text.strip().replace(".", "")
-        try:
-            return float(texto)
-        except ValueError:
-            pass
+            # Fallback: preço visível na página (parte inteira do valor)
+            if preco is None:
+                el = page.query_selector(".andes-money-amount__fraction")
+                if el:
+                    preco = _extrair_preco_do_texto(el.inner_text().strip())
 
-    print(
-        f"[ML][debug] status={resp.status_code} tamanho_html={len(resp.text)} "
-        f"trecho={resp.text[:300]!r}"
-    )
-    return None
+            if preco is None:
+                html = page.content()
+                print(
+                    f"[ML][debug] tamanho_html={len(html)} "
+                    f"trecho={html[:300]!r}"
+                )
+        finally:
+            browser.close()
+
+    return preco
+
+
+def _extrair_preco_do_texto(texto: str):
+    numero = re.sub(r"[^\d,\.]", "", texto)
+    numero = numero.replace(".", "").replace(",", ".")
+    try:
+        return float(numero)
+    except ValueError:
+        return None
 
 
 def preco_amazon(url: str):
-    """Faz scraping leve da página do produto na Amazon para extrair o preço."""
-    resp = requests.get(url, headers=HEADERS, timeout=15)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "lxml")
+    """Usa um navegador headless (Playwright) para acessar a Amazon e extrair o preço.
 
+    A Amazon bloqueia requisições simples (tipo requests/urllib) vindas de IPs
+    de datacenter com uma página de captcha. Um navegador de verdade, mesmo
+    headless, tem mais chance de passar — mas não é garantido.
+    """
     seletores = [
         "span.a-price span.a-offscreen",
         "#priceblock_ourprice",
@@ -96,22 +121,39 @@ def preco_amazon(url: str):
         "#corePrice_feature_div span.a-offscreen",
     ]
 
-    for seletor in seletores:
-        el = soup.select_one(seletor)
-        if el and el.text.strip():
-            texto = el.text.strip()
-            numero = re.sub(r"[^\d,\.]", "", texto)
-            numero = numero.replace(".", "").replace(",", ".")
-            try:
-                return float(numero)
-            except ValueError:
-                continue
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            user_agent=HEADERS["User-Agent"],
+            locale="pt-BR",
+            viewport={"width": 1280, "height": 800},
+        )
+        page = context.new_page()
 
-    print(
-        f"[Amazon][debug] status={resp.status_code} tamanho_html={len(resp.text)} "
-        f"trecho={resp.text[:300]!r}"
-    )
-    return None
+        preco = None
+        try:
+            page.goto(url, timeout=30000, wait_until="domcontentloaded")
+            page.wait_for_timeout(2000)  # dá um tempo pra página terminar de montar
+
+            for seletor in seletores:
+                el = page.query_selector(seletor)
+                if el:
+                    texto = el.inner_text().strip()
+                    if texto:
+                        preco = _extrair_preco_do_texto(texto)
+                        if preco is not None:
+                            break
+
+            if preco is None:
+                html = page.content()
+                print(
+                    f"[Amazon][debug] tamanho_html={len(html)} "
+                    f"trecho={html[:300]!r}"
+                )
+        finally:
+            browser.close()
+
+    return preco
 
 
 def enviar_telegram(mensagem: str):
