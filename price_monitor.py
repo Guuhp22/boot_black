@@ -15,9 +15,14 @@ from playwright.sync_api import sync_playwright
 
 CONFIG_FILE = Path("config.json")
 HISTORY_FILE = Path("price_history.json")
+ML_TOKEN_FILE = Path("ml_token.json")
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+
+ML_CLIENT_ID = os.environ.get("ML_CLIENT_ID")
+ML_CLIENT_SECRET = os.environ.get("ML_CLIENT_SECRET")
+ML_REFRESH_TOKEN_INICIAL = os.environ.get("ML_REFRESH_TOKEN")
 
 HEADERS = {
     "User-Agent": (
@@ -41,61 +46,54 @@ def salvar_json(caminho: Path, dados):
         json.dump(dados, f, ensure_ascii=False, indent=2)
 
 
-def preco_mercado_livre(url: str):
-    """Usa Playwright para acessar o Mercado Livre e extrair o preço.
+def obter_access_token_mercado_livre():
+    """Troca o refresh token por um access token novo via API oficial do ML.
 
-    Requisições simples (requests) são identificadas como tráfego
-    suspeito e bloqueadas; um navegador headless tem mais chance de
-    passar pela verificação.
+    O ML rotaciona o refresh token a cada uso: o novo valor é salvo em
+    ml_token.json, que o workflow commita de volta no repositório (igual
+    já faz com price_history.json), pra usar na próxima execução.
     """
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent=HEADERS["User-Agent"],
-            locale="pt-BR",
-            viewport={"width": 1280, "height": 800},
-        )
-        page = context.new_page()
+    if not ML_CLIENT_ID or not ML_CLIENT_SECRET:
+        return None
 
-        preco = None
-        try:
-            page.goto(url, timeout=30000, wait_until="domcontentloaded")
-            page.wait_for_timeout(2000)
+    token_salvo = carregar_json(ML_TOKEN_FILE, {})
+    refresh_token = token_salvo.get("refresh_token") or ML_REFRESH_TOKEN_INICIAL
 
-            # Tenta primeiro via dado estruturado (JSON-LD), mais confiável
-            for script in page.query_selector_all('script[type="application/ld+json"]'):
-                try:
-                    dados = json.loads(script.inner_text())
-                except (TypeError, ValueError):
-                    continue
-                candidatos = dados if isinstance(dados, list) else [dados]
-                for candidato in candidatos:
-                    oferta = candidato.get("offers") if isinstance(candidato, dict) else None
-                    if isinstance(oferta, dict) and oferta.get("price"):
-                        try:
-                            preco = float(oferta["price"])
-                            break
-                        except (TypeError, ValueError):
-                            pass
-                if preco is not None:
-                    break
+    if not refresh_token:
+        return None
 
-            # Fallback: preço visível na página (parte inteira do valor)
-            if preco is None:
-                el = page.query_selector(".andes-money-amount__fraction")
-                if el:
-                    preco = _extrair_preco_do_texto(el.inner_text().strip())
+    resp = requests.post(
+        "https://api.mercadolibre.com/oauth/token",
+        headers={"accept": "application/json"},
+        data={
+            "grant_type": "refresh_token",
+            "client_id": ML_CLIENT_ID,
+            "client_secret": ML_CLIENT_SECRET,
+            "refresh_token": refresh_token,
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
+    dados = resp.json()
 
-            if preco is None:
-                html = page.content()
-                print(
-                    f"[ML][debug] tamanho_html={len(html)} "
-                    f"trecho={html[:300]!r}"
-                )
-        finally:
-            browser.close()
+    novo_refresh_token = dados.get("refresh_token")
+    if novo_refresh_token:
+        salvar_json(ML_TOKEN_FILE, {"refresh_token": novo_refresh_token})
 
-    return preco
+    return dados.get("access_token")
+
+
+def preco_mercado_livre(item_id: str, access_token: str):
+    """Busca o preço de um anúncio via API oficial do Mercado Livre (autenticada)."""
+    url = f"https://api.mercadolibre.com/items/{item_id}"
+    resp = requests.get(
+        url,
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    dados = resp.json()
+    return dados.get("price"), dados.get("permalink")
 
 
 def _extrair_preco_do_texto(texto: str):
@@ -182,6 +180,19 @@ def main():
         print("Nenhum item configurado em config.json.")
         sys.exit(0)
 
+    precisa_ml = any(item.get("mercado_livre_id") for item in config["items"])
+    ml_access_token = None
+    if precisa_ml:
+        try:
+            ml_access_token = obter_access_token_mercado_livre()
+        except Exception as e:
+            print(f"[ML] Erro ao obter access token: {e}")
+        if not ml_access_token:
+            print(
+                "[ML] Sem access token válido (confira ML_CLIENT_ID, "
+                "ML_CLIENT_SECRET e ML_REFRESH_TOKEN nos secrets)."
+            )
+
     for item in config["items"]:
         nome = item.get("nome", "Item sem nome")
         chave = nome  # usa o nome como chave do histórico
@@ -189,12 +200,14 @@ def main():
         preco_atual = None
         link_exibicao = None
 
-        if item.get("mercado_livre_url"):
-            try:
-                preco_atual = preco_mercado_livre(item["mercado_livre_url"])
-                link_exibicao = item["mercado_livre_url"]
-            except Exception as e:
-                print(f"[ML] Erro ao buscar preço de '{nome}': {e}")
+        if item.get("mercado_livre_id"):
+            if ml_access_token:
+                try:
+                    preco_atual, link_exibicao = preco_mercado_livre(
+                        item["mercado_livre_id"], ml_access_token
+                    )
+                except Exception as e:
+                    print(f"[ML] Erro ao buscar preço de '{nome}': {e}")
 
         elif item.get("amazon_url"):
             try:
