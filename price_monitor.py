@@ -41,13 +41,42 @@ def salvar_json(caminho: Path, dados):
         json.dump(dados, f, ensure_ascii=False, indent=2)
 
 
-def preco_mercado_livre(item_id: str):
-    """Busca o preço de um anúncio via API pública do Mercado Livre."""
-    url = f"https://api.mercadolibre.com/items/{item_id}"
+def preco_mercado_livre(url: str):
+    """Faz scraping da página do produto no Mercado Livre para extrair o preço.
+
+    A API oficial (api.mercadolibre.com/items/...) passou a exigir um
+    access token mesmo para itens públicos, então extraímos o preço
+    direto do HTML da página, igual é feito para a Amazon.
+    """
     resp = requests.get(url, headers=HEADERS, timeout=15)
     resp.raise_for_status()
-    dados = resp.json()
-    return dados.get("price")
+    soup = BeautifulSoup(resp.text, "lxml")
+
+    # Tenta primeiro via dado estruturado (JSON-LD), que é mais confiável
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            dados = json.loads(script.string)
+        except (TypeError, ValueError):
+            continue
+        candidatos = dados if isinstance(dados, list) else [dados]
+        for candidato in candidatos:
+            oferta = candidato.get("offers") if isinstance(candidato, dict) else None
+            if isinstance(oferta, dict) and oferta.get("price"):
+                try:
+                    return float(oferta["price"])
+                except (TypeError, ValueError):
+                    pass
+
+    # Fallback: preço visível na página (parte inteira do valor)
+    fracao = soup.select_one(".andes-money-amount__fraction")
+    if fracao:
+        texto = fracao.text.strip().replace(".", "")
+        try:
+            return float(texto)
+        except ValueError:
+            pass
+
+    return None
 
 
 def preco_amazon(url: str):
@@ -110,10 +139,10 @@ def main():
         preco_atual = None
         link_exibicao = None
 
-        if item.get("mercado_livre_id"):
+        if item.get("mercado_livre_url"):
             try:
-                preco_atual = preco_mercado_livre(item["mercado_livre_id"])
-                link_exibicao = f"https://produto.mercadolivre.com.br/{item['mercado_livre_id']}"
+                preco_atual = preco_mercado_livre(item["mercado_livre_url"])
+                link_exibicao = item["mercado_livre_url"]
             except Exception as e:
                 print(f"[ML] Erro ao buscar preço de '{nome}': {e}")
 
