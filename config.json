@@ -2,11 +2,11 @@
   "items": [
     {
       "nome": "Exemplo Mercado Livre",
-      "mercado_livre_id": "MLB1234567890"
+      "mercado_livre_id": "MLB62320878"
     },
     {
       "nome": "Exemplo Amazon",
-      "amazon_url": "https://www.amazon.com.br/dp/XXXXXXXXXX"
+      "amazon_url": "https://www.amazon.com.br/gp/product/B0G22R3QLT"
     }
   ]
 }
