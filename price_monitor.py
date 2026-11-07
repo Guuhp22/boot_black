@@ -91,6 +91,8 @@ def preco_mercado_livre(item_id: str, access_token: str):
         headers={"Authorization": f"Bearer {access_token}"},
         timeout=15,
     )
+    if not resp.ok:
+        print(f"[ML][debug] status={resp.status_code} resposta={resp.text}")
     resp.raise_for_status()
     dados = resp.json()
     return dados.get("price"), dados.get("permalink")
