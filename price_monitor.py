@@ -76,6 +76,10 @@ def preco_mercado_livre(url: str):
         except ValueError:
             pass
 
+    print(
+        f"[ML][debug] status={resp.status_code} tamanho_html={len(resp.text)} "
+        f"trecho={resp.text[:300]!r}"
+    )
     return None
 
 
@@ -103,6 +107,10 @@ def preco_amazon(url: str):
             except ValueError:
                 continue
 
+    print(
+        f"[Amazon][debug] status={resp.status_code} tamanho_html={len(resp.text)} "
+        f"trecho={resp.text[:300]!r}"
+    )
     return None
 
 
