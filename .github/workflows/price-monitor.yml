@@ -26,17 +26,19 @@ jobs:
       - name: Instalar navegador do Playwright
         run: playwright install --with-deps chromium
 
-
       - name: Rodar monitoramento
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ML_CLIENT_ID: ${{ secrets.ML_CLIENT_ID }}
+          ML_CLIENT_SECRET: ${{ secrets.ML_CLIENT_SECRET }}
+          ML_REFRESH_TOKEN: ${{ secrets.ML_REFRESH_TOKEN }}
         run: python price_monitor.py
 
-      - name: Salvar histórico atualizado
+      - name: Salvar histórico e token atualizados
         run: |
           git config user.name "price-monitor-bot"
           git config user.email "actions@github.com"
-          git add price_history.json
-          git diff --staged --quiet || git commit -m "Atualiza histórico de preços"
+          git add price_history.json ml_token.json
+          git diff --staged --quiet || git commit -m "Atualiza histórico de preços e token do ML"
           git push
