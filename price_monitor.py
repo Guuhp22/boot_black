@@ -4,6 +4,7 @@ Roda via GitHub Actions (ou qualquer agendador) e avisa no Telegram
 quando o preço de um item cai.
 """
 
+import html
 import json
 import os
 import re
@@ -216,29 +217,31 @@ def main():
         if preco_atual is None:
             print(f"Não foi possível obter o preço de '{nome}'.")
             linhas_mensagem.append(
-                f"⚠️ <b>{nome}</b>: não consegui checar o preço agora."
+                f"⚠️ <b>{html.escape(nome)}</b>: não consegui checar o preço agora."
             )
             continue
 
         preco_anterior = historico.get(chave)
         print(f"{nome}: R$ {preco_atual:.2f} (anterior: {preco_anterior})")
 
+        nome_seguro = html.escape(nome)  # evita quebrar o HTML da mensagem
+
         if preco_anterior is None:
-            linha = f"🆕 <b>{nome}</b>: R$ {preco_atual:.2f} (primeira checagem)"
+            linha = f"🆕 <b>{nome_seguro}</b>: R$ {preco_atual:.2f} (primeira checagem)"
         elif preco_atual < preco_anterior:
             diferenca = preco_anterior - preco_atual
             linha = (
-                f"📉 <b>{nome}</b>: R$ {preco_atual:.2f} "
+                f"📉 <b>{nome_seguro}</b>: R$ {preco_atual:.2f} "
                 f"(caiu de R$ {preco_anterior:.2f}, -R$ {diferenca:.2f})"
             )
         elif preco_atual > preco_anterior:
             diferenca = preco_atual - preco_anterior
             linha = (
-                f"📈 <b>{nome}</b>: R$ {preco_atual:.2f} "
+                f"📈 <b>{nome_seguro}</b>: R$ {preco_atual:.2f} "
                 f"(subiu de R$ {preco_anterior:.2f}, +R$ {diferenca:.2f})"
             )
         else:
-            linha = f"➡️ <b>{nome}</b>: R$ {preco_atual:.2f} (sem mudança)"
+            linha = f"➡️ <b>{nome_seguro}</b>: R$ {preco_atual:.2f} (sem mudança)"
 
         if link_exibicao:
             linha += f"\n{link_exibicao}"
