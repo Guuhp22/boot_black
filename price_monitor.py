@@ -190,6 +190,8 @@ def main():
         print("Nenhum item configurado em config.json.")
         sys.exit(0)
 
+    linhas_mensagem = []
+
     for item in config["items"]:
         nome = item.get("nome", "Item sem nome")
         chave = nome  # usa o nome como chave do histórico
@@ -213,26 +215,42 @@ def main():
 
         if preco_atual is None:
             print(f"Não foi possível obter o preço de '{nome}'.")
+            linhas_mensagem.append(
+                f"⚠️ <b>{nome}</b>: não consegui checar o preço agora."
+            )
             continue
 
         preco_anterior = historico.get(chave)
-
         print(f"{nome}: R$ {preco_atual:.2f} (anterior: {preco_anterior})")
 
-        if preco_anterior is not None and preco_atual < preco_anterior:
+        if preco_anterior is None:
+            linha = f"🆕 <b>{nome}</b>: R$ {preco_atual:.2f} (primeira checagem)"
+        elif preco_atual < preco_anterior:
             diferenca = preco_anterior - preco_atual
-            mensagem = (
-                f"📉 <b>{nome}</b> baixou de preço!\n"
-                f"De R$ {preco_anterior:.2f} para R$ {preco_atual:.2f} "
-                f"(-R$ {diferenca:.2f})\n{link_exibicao}"
+            linha = (
+                f"📉 <b>{nome}</b>: R$ {preco_atual:.2f} "
+                f"(caiu de R$ {preco_anterior:.2f}, -R$ {diferenca:.2f})"
             )
-            enviar_telegram(mensagem)
-        elif preco_anterior is None:
-            print(f"Primeira checagem de '{nome}', preço salvo sem aviso.")
+        elif preco_atual > preco_anterior:
+            diferenca = preco_atual - preco_anterior
+            linha = (
+                f"📈 <b>{nome}</b>: R$ {preco_atual:.2f} "
+                f"(subiu de R$ {preco_anterior:.2f}, +R$ {diferenca:.2f})"
+            )
+        else:
+            linha = f"➡️ <b>{nome}</b>: R$ {preco_atual:.2f} (sem mudança)"
 
+        if link_exibicao:
+            linha += f"\n{link_exibicao}"
+
+        linhas_mensagem.append(linha)
         historico[chave] = preco_atual
 
     salvar_json(HISTORY_FILE, historico)
+
+    if linhas_mensagem:
+        mensagem = "\n\n".join(linhas_mensagem)
+        enviar_telegram(mensagem)
 
 
 if __name__ == "__main__":
