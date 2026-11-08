@@ -11,18 +11,17 @@ import sys
 from pathlib import Path
 
 import requests
+from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
 CONFIG_FILE = Path("config.json")
 HISTORY_FILE = Path("price_history.json")
-ML_TOKEN_FILE = Path("ml_token.json")
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-ML_CLIENT_ID = os.environ.get("ML_CLIENT_ID")
-ML_CLIENT_SECRET = os.environ.get("ML_CLIENT_SECRET")
-ML_REFRESH_TOKEN_INICIAL = os.environ.get("ML_REFRESH_TOKEN")
+BRIGHTDATA_API_KEY = os.environ.get("BRIGHTDATA_API_KEY")
+BRIGHTDATA_ZONE = os.environ.get("BRIGHTDATA_ZONE")
 
 HEADERS = {
     "User-Agent": (
@@ -46,58 +45,6 @@ def salvar_json(caminho: Path, dados):
         json.dump(dados, f, ensure_ascii=False, indent=2)
 
 
-def obter_access_token_mercado_livre():
-    """Troca o refresh token por um access token novo via API oficial do ML.
-
-    O ML rotaciona o refresh token a cada uso: o novo valor é salvo em
-    ml_token.json, que o workflow commita de volta no repositório (igual
-    já faz com price_history.json), pra usar na próxima execução.
-    """
-    if not ML_CLIENT_ID or not ML_CLIENT_SECRET:
-        return None
-
-    token_salvo = carregar_json(ML_TOKEN_FILE, {})
-    refresh_token = token_salvo.get("refresh_token") or ML_REFRESH_TOKEN_INICIAL
-
-    if not refresh_token:
-        return None
-
-    resp = requests.post(
-        "https://api.mercadolibre.com/oauth/token",
-        headers={"accept": "application/json"},
-        data={
-            "grant_type": "refresh_token",
-            "client_id": ML_CLIENT_ID,
-            "client_secret": ML_CLIENT_SECRET,
-            "refresh_token": refresh_token,
-        },
-        timeout=15,
-    )
-    resp.raise_for_status()
-    dados = resp.json()
-
-    novo_refresh_token = dados.get("refresh_token")
-    if novo_refresh_token:
-        salvar_json(ML_TOKEN_FILE, {"refresh_token": novo_refresh_token})
-
-    return dados.get("access_token")
-
-
-def preco_mercado_livre(item_id: str, access_token: str):
-    """Busca o preço de um anúncio via API oficial do Mercado Livre (autenticada)."""
-    url = f"https://api.mercadolibre.com/items/{item_id}"
-    resp = requests.get(
-        url,
-        headers={"Authorization": f"Bearer {access_token}"},
-        timeout=15,
-    )
-    if not resp.ok:
-        print(f"[ML][debug] status={resp.status_code} resposta={resp.text}")
-    resp.raise_for_status()
-    dados = resp.json()
-    return dados.get("price"), dados.get("permalink")
-
-
 def _extrair_preco_do_texto(texto: str):
     numero = re.sub(r"[^\d,\.]", "", texto)
     numero = numero.replace(".", "").replace(",", ".")
@@ -105,6 +52,67 @@ def _extrair_preco_do_texto(texto: str):
         return float(numero)
     except ValueError:
         return None
+
+
+def _extrair_preco_do_html(html: str):
+    """Procura o preço em um HTML do Mercado Livre (JSON-LD ou texto visível)."""
+    soup = BeautifulSoup(html, "lxml")
+
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            dados = json.loads(script.string)
+        except (TypeError, ValueError):
+            continue
+        candidatos = dados if isinstance(dados, list) else [dados]
+        for candidato in candidatos:
+            oferta = candidato.get("offers") if isinstance(candidato, dict) else None
+            if isinstance(oferta, dict) and oferta.get("price"):
+                try:
+                    return float(oferta["price"])
+                except (TypeError, ValueError):
+                    pass
+
+    fracao = soup.select_one(".andes-money-amount__fraction")
+    if fracao:
+        preco = _extrair_preco_do_texto(fracao.text.strip())
+        if preco is not None:
+            return preco
+
+    return None
+
+
+def preco_mercado_livre(url: str):
+    """Busca o preço no Mercado Livre via Bright Data Web Unlocker.
+
+    O Mercado Livre bloqueia requisições simples e até navegador headless
+    comum vindos de IP de datacenter. O Web Unlocker é um serviço (com
+    cota gratuita mensal) que contorna esse bloqueio e devolve o HTML
+    real da página.
+    """
+    if not BRIGHTDATA_API_KEY or not BRIGHTDATA_ZONE:
+        print(
+            "[ML] BRIGHTDATA_API_KEY ou BRIGHTDATA_ZONE não configurados nos secrets."
+        )
+        return None
+
+    resp = requests.post(
+        "https://api.brightdata.com/request",
+        headers={
+            "Authorization": f"Bearer {BRIGHTDATA_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={"zone": BRIGHTDATA_ZONE, "url": url, "format": "raw"},
+        timeout=30,
+    )
+    resp.raise_for_status()
+
+    preco = _extrair_preco_do_html(resp.text)
+    if preco is None:
+        print(
+            f"[ML][debug] tamanho_html={len(resp.text)} "
+            f"trecho={resp.text[:300]!r}"
+        )
+    return preco
 
 
 def preco_amazon(url: str):
@@ -182,19 +190,6 @@ def main():
         print("Nenhum item configurado em config.json.")
         sys.exit(0)
 
-    precisa_ml = any(item.get("mercado_livre_id") for item in config["items"])
-    ml_access_token = None
-    if precisa_ml:
-        try:
-            ml_access_token = obter_access_token_mercado_livre()
-        except Exception as e:
-            print(f"[ML] Erro ao obter access token: {e}")
-        if not ml_access_token:
-            print(
-                "[ML] Sem access token válido (confira ML_CLIENT_ID, "
-                "ML_CLIENT_SECRET e ML_REFRESH_TOKEN nos secrets)."
-            )
-
     for item in config["items"]:
         nome = item.get("nome", "Item sem nome")
         chave = nome  # usa o nome como chave do histórico
@@ -202,14 +197,12 @@ def main():
         preco_atual = None
         link_exibicao = None
 
-        if item.get("mercado_livre_id"):
-            if ml_access_token:
-                try:
-                    preco_atual, link_exibicao = preco_mercado_livre(
-                        item["mercado_livre_id"], ml_access_token
-                    )
-                except Exception as e:
-                    print(f"[ML] Erro ao buscar preço de '{nome}': {e}")
+        if item.get("mercado_livre_url"):
+            try:
+                preco_atual = preco_mercado_livre(item["mercado_livre_url"])
+                link_exibicao = item["mercado_livre_url"]
+            except Exception as e:
+                print(f"[ML] Erro ao buscar preço de '{nome}': {e}")
 
         elif item.get("amazon_url"):
             try:
