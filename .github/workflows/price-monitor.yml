@@ -2,7 +2,7 @@ name: Monitor de Preços
 
 on:
   schedule:
-    - cron: "0 */6 * * *" # a cada 6 horas
+    - cron: "0 */2 * * *" # a cada 6 horas
   workflow_dispatch: {}
 
 permissions:
