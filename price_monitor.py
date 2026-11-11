@@ -1,7 +1,7 @@
 """
-Bot de monitoramento de preços - Mercado Livre e Amazon
+Bot de monitoramento de preços - Amazon
 Roda via GitHub Actions (ou qualquer agendador) e avisa no Telegram
-quando o preço de um item cai.
+a cada checagem, com o preço atual de cada item.
 """
 
 import html
@@ -12,7 +12,6 @@ import sys
 from pathlib import Path
 
 import requests
-from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
 CONFIG_FILE = Path("config.json")
@@ -20,9 +19,6 @@ HISTORY_FILE = Path("price_history.json")
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-
-BRIGHTDATA_API_KEY = os.environ.get("BRIGHTDATA_API_KEY")
-BRIGHTDATA_ZONE = os.environ.get("BRIGHTDATA_ZONE")
 
 HEADERS = {
     "User-Agent": (
@@ -53,67 +49,6 @@ def _extrair_preco_do_texto(texto: str):
         return float(numero)
     except ValueError:
         return None
-
-
-def _extrair_preco_do_html(html: str):
-    """Procura o preço em um HTML do Mercado Livre (JSON-LD ou texto visível)."""
-    soup = BeautifulSoup(html, "lxml")
-
-    for script in soup.find_all("script", type="application/ld+json"):
-        try:
-            dados = json.loads(script.string)
-        except (TypeError, ValueError):
-            continue
-        candidatos = dados if isinstance(dados, list) else [dados]
-        for candidato in candidatos:
-            oferta = candidato.get("offers") if isinstance(candidato, dict) else None
-            if isinstance(oferta, dict) and oferta.get("price"):
-                try:
-                    return float(oferta["price"])
-                except (TypeError, ValueError):
-                    pass
-
-    fracao = soup.select_one(".andes-money-amount__fraction")
-    if fracao:
-        preco = _extrair_preco_do_texto(fracao.text.strip())
-        if preco is not None:
-            return preco
-
-    return None
-
-
-def preco_mercado_livre(url: str):
-    """Busca o preço no Mercado Livre via Bright Data Web Unlocker.
-
-    O Mercado Livre bloqueia requisições simples e até navegador headless
-    comum vindos de IP de datacenter. O Web Unlocker é um serviço (com
-    cota gratuita mensal) que contorna esse bloqueio e devolve o HTML
-    real da página.
-    """
-    if not BRIGHTDATA_API_KEY or not BRIGHTDATA_ZONE:
-        print(
-            "[ML] BRIGHTDATA_API_KEY ou BRIGHTDATA_ZONE não configurados nos secrets."
-        )
-        return None
-
-    resp = requests.post(
-        "https://api.brightdata.com/request",
-        headers={
-            "Authorization": f"Bearer {BRIGHTDATA_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        json={"zone": BRIGHTDATA_ZONE, "url": url, "format": "raw"},
-        timeout=30,
-    )
-    resp.raise_for_status()
-
-    preco = _extrair_preco_do_html(resp.text)
-    if preco is None:
-        print(
-            f"[ML][debug] tamanho_html={len(resp.text)} "
-            f"trecho={resp.text[:300]!r}"
-        )
-    return preco
 
 
 def preco_amazon(url: str):
@@ -200,14 +135,7 @@ def main():
         preco_atual = None
         link_exibicao = None
 
-        if item.get("mercado_livre_url"):
-            try:
-                preco_atual = preco_mercado_livre(item["mercado_livre_url"])
-                link_exibicao = item["mercado_livre_url"]
-            except Exception as e:
-                print(f"[ML] Erro ao buscar preço de '{nome}': {e}")
-
-        elif item.get("amazon_url"):
+        if item.get("amazon_url"):
             try:
                 preco_atual = preco_amazon(item["amazon_url"])
                 link_exibicao = item["amazon_url"]
