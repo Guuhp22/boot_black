@@ -2,7 +2,7 @@ name: Monitor de Preços
 
 on:
   schedule:
-    - cron: "0 */2 * * *" # a cada 6 horas
+    - cron: "0 */6 * * *" # a cada 6 horas
   workflow_dispatch: {}
 
 permissions:
@@ -30,8 +30,6 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          BRIGHTDATA_API_KEY: ${{ secrets.BRIGHTDATA_API_KEY }}
-          BRIGHTDATA_ZONE: ${{ secrets.BRIGHTDATA_ZONE }}
         run: python price_monitor.py
 
       - name: Salvar histórico atualizado
